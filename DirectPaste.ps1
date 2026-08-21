@@ -12,7 +12,8 @@ public sealed class DirectPasteWindow : Form {
     const int HOTKEY_ID = 7301;
     const uint MOD_CONTROL = 0x0002;
     const uint VK_V = 0x56;
-    bool forwarding;
+    readonly Timer foregroundTimer;
+    bool registered;
     public event Action BitmapPasteRequested;
 
     [DllImport("user32.dll", SetLastError=true)] static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint key);
@@ -21,8 +22,11 @@ public sealed class DirectPasteWindow : Form {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
     public DirectPasteWindow() {
-        if (!RegisterHotKey(Handle, HOTKEY_ID, MOD_CONTROL, VK_V))
-            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Cannot register Ctrl+V");
+        foregroundTimer = new Timer();
+        foregroundTimer.Interval = 100;
+        foregroundTimer.Tick += delegate { UpdateRegistration(); };
+        foregroundTimer.Start();
+        UpdateRegistration();
     }
 
     static bool ExplorerIsForeground() {
@@ -32,20 +36,29 @@ public sealed class DirectPasteWindow : Form {
         catch { return false; }
     }
 
+    void UpdateRegistration() {
+        bool shouldRegister = ExplorerIsForeground();
+        if (shouldRegister && !registered)
+            registered = RegisterHotKey(Handle, HOTKEY_ID, MOD_CONTROL, VK_V);
+        else if (!shouldRegister && registered) {
+            UnregisterHotKey(Handle, HOTKEY_ID);
+            registered = false;
+        }
+    }
+
     protected override void WndProc(ref Message message) {
-        if (message.Msg == WM_HOTKEY && message.WParam.ToInt32() == HOTKEY_ID && !forwarding) {
+        if (message.Msg == WM_HOTKEY && message.WParam.ToInt32() == HOTKEY_ID) {
             bool bitmap = false;
             try { bitmap = Clipboard.ContainsImage() && !Clipboard.ContainsFileDropList(); } catch {}
             if (ExplorerIsForeground() && bitmap) {
                 if (BitmapPasteRequested != null) BitmapPasteRequested();
             } else {
-                forwarding = true;
                 try {
                     UnregisterHotKey(Handle, HOTKEY_ID);
+                    registered = false;
                     SendKeys.SendWait("^v");
                 } finally {
-                    RegisterHotKey(Handle, HOTKEY_ID, MOD_CONTROL, VK_V);
-                    forwarding = false;
+                    UpdateRegistration();
                 }
             }
             return;
@@ -55,7 +68,8 @@ public sealed class DirectPasteWindow : Form {
 
     protected override void SetVisibleCore(bool value) { base.SetVisibleCore(false); }
     protected override void Dispose(bool disposing) {
-        UnregisterHotKey(Handle, HOTKEY_ID);
+        foregroundTimer.Dispose();
+        if (registered) UnregisterHotKey(Handle, HOTKEY_ID);
         base.Dispose(disposing);
     }
 }
